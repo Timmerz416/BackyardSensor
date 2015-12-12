@@ -6,7 +6,6 @@ Author:		Tim Lampman
 
 #include <Wire.h>
 #include <LumSensor.h>
-#include <OneWire.h>
 #include <HTU21D.h>
 #include <MAX1704.h>
 #include <XBee.h>
@@ -46,13 +45,11 @@ const unsigned long COMM_DELAY = 1000;		// The period allowed for XBee communica
 
 // Local pins
 const int POWER_PIN = 12;	// The digital pin for powering the sensors and XBee
-const int TEMP_PIN = 11;	// The digital pin for 1-Wire temperature sensor comms
 
 // Sensor objects
 HTU21D airSensor;
 MAX1704 batterySensor;
 AutoLightSensor lightSensor;
-OneWire tempSensor(TEMP_PIN);
 
 // Union for conversion of numbers to byte arrays
 union FloatConverter {
@@ -73,7 +70,7 @@ void setup() {
 
 	// Start the I2C interface
 	lightSensor.begin();
-
+	
 	// Setup the serial communications
 	Serial.begin(9600);
 	Message("Starting Serial...");
@@ -111,21 +108,21 @@ void loop() {
 	//-------------------------------------------------------------------------
 	// COLLECT SENSOR DATA
 	//-------------------------------------------------------------------------
-	// Read the outdoor environment temperature
-	Message("Reading exterior temperature");
-	FloatConverter Temperature;
-	Temperature.f = ReadTemperature();
+	// Read the luminosity
+	Message("Reading the luminosity");
+	FloatConverter Luminosity;
+	Luminosity.f = lightSensor.getLuminosity();
 
 	// Read the temperature in the box - could be used for humidity corrections
-	Message("Reading interior tempeature");
-	FloatConverter InnerTemperature;
-	InnerTemperature.f = airSensor.readTemperature();
+	Message("Reading tempeature");
+	FloatConverter Temperature;
+	Temperature.f = airSensor.readTemperature();
 
 	// Read the humidity
 	Message("Reading humidity");
 	FloatConverter Humidity;
 	float raw_humidity = airSensor.readHumidity();
-	//	Humidity.f = raw_humidity - 0.15*(25.0 - InnerTemperature.f);	// Correction for HTU21D from spec sheet
+	//	Humidity.f = raw_humidity - 0.15*(25.0 - Temperature.f);	// Correction for HTU21D from spec sheet
 	Humidity.f = raw_humidity;
 
 	// Read the battery voltage
@@ -148,21 +145,23 @@ void loop() {
 	// Create the byte array to pass to the XBee
 	Message("Creating XBee data transmission");
 	size_t floatBytes = sizeof(float);
-	uint8_t package[1 + 4 * (floatBytes + 1)];
+	uint8_t package[1 + 5 * (floatBytes + 1)];
 	package[0] = CMD_SENSOR_DATA;
 	package[1] = TEMPERATURE_CODE;
 	package[1 + (floatBytes + 1)] = HUMIDITY_CODE;
 	package[1 + 2 * (floatBytes + 1)] = POWER_CODE;
 	package[1 + 3 * (floatBytes + 1)] = BATTERY_SOC_CODE;
+	package[1 + 4 * (floatBytes + 1)] = LUX_CODE;
 	for(int i = 0; i < floatBytes; i++) {
 		package[i + 2] = Temperature.b[i];
 		package[i + 2 + (floatBytes + 1)] = Humidity.b[i];
 		package[i + 2 + 2 * (floatBytes + 1)] = Power.b[i];
 		package[i + 2 + 3 * (floatBytes + 1)] = SOC.b[i];
+		package[i + 2 + 4 * (floatBytes + 1)] = Luminosity.b[i];
 	}
 
 	// Create the message text for debugging output
-	String xbee_message = "Sent the following message(" + String(Temperature.f) + "," + Humidity.f + "," + Power.f + "," + SOC.f + "): ";
+	String xbee_message = "Sent the following message(" + String(Temperature.f) + "," + Humidity.f + "," + Power.f + "," + SOC.f + "," + Luminosity.f + "): ";
 	for(int i = 0; i < sizeof(package); i++) {
 		if(i != 0) xbee_message += "-";
 		xbee_message += String(package[i], HEX);
@@ -210,65 +209,4 @@ void Message(String msg) {
 	Serial.print(millis());
 	Serial.print(": ");
 	Serial.println(msg);
-}
-
-//=============================================================================
-// ReadTemperature
-//=============================================================================
-// Returns the temperature from one DS18S20 in DEG Celsius - only for 1 DS18B20
-float ReadTemperature() {
-	// Local variables
-	byte data[12];	// The 12-byte temperature reading from the sensor
-	byte addr[8];	// The address the sole temperature sensor
-
-	//-------------------------------------------------------------------------
-	// GET THE DEVICE ADDRESS
-	//-------------------------------------------------------------------------
-	// Search for the address
-	if(!tempSensor.search(addr)) {
-		// No more sensors on chain, reset search
-		tempSensor.reset_search();
-		return -1000;
-	}
-
-	// Perform CRC check on return address
-	if(OneWire::crc8(addr, 7) != addr[7]) {
-		Serial.println("CRC is not valid!");
-		return -1000;
-	}
-
-	// Check leading bit for correct device type
-	if(addr[0] != 0x10 && addr[0] != 0x28) {
-		Serial.print("Device is not recognized");
-		return -1000;
-	}
-
-	//-------------------------------------------------------------------------
-	// READ THE TEMPERATURE
-	//-------------------------------------------------------------------------
-	// Set sensor to read temperature
-	tempSensor.reset();
-	tempSensor.select(addr);
-	tempSensor.write(0x44, 1); // Start conversion, with parasite power on at the end
-
-	// Signal sensor to write out the scratchpad
-	tempSensor.reset();
-	tempSensor.select(addr);
-	tempSensor.write(0xBE); // Issue write scratchpad command
-
-	// Read the entire scratchpad
-	for(int i = 0; i < 9; i++) data[i] = tempSensor.read();	// Read all 9 bytes
-	tempSensor.reset_search();	// Reset the 1-wire search state
-
-	//-------------------------------------------------------------------------
-	// GET THE DEVICE ADDRESS
-	//-------------------------------------------------------------------------
-	// Get the temperature bytes and convert to a float
-	byte MSB = data[1];
-	byte LSB = data[0];
-
-	float tempRead = ((MSB << 8) | LSB); // Using two's compliment
-	float TemperatureSum = tempRead/16;
-
-	return TemperatureSum;
 }
