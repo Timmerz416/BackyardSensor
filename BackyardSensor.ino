@@ -15,7 +15,7 @@ Author:		Tim Lampman
 // Sleep/Delay behaviour
 ISR(WDT_vect) { Sleepy::watchdogEvent(); } // Setup the watchdog
 
-const bool prefer_sleep = true;		// Specifies whether to use delay (false) or sleep (true) for long delays without sensor power
+const bool prefer_sleep = false;		// Specifies whether to use delay (false) or sleep (true) for long delays without sensor power
 const bool high_power = true;		// Specifies whether to use delay (true) or sleep (false) for periods when power supplied to sensors
 
 // XBee variables
@@ -39,7 +39,7 @@ const uint8_t BATTERY_SOC_CODE = 10;
 
 // Timing variables
 const unsigned long SENSOR_DELAY = 60000;	// The sleep period (ms)
-const unsigned long DELAY_PERIODS = 10;		// The number of sleep periods before updating sensor readings
+const unsigned long DELAY_PERIODS = 1;		// The number of sleep periods before updating sensor readings
 const unsigned long STARTUP_DELAY = 3000;	// The period allowed for component warmup and initialization (ms).
 const unsigned long COMM_DELAY = 1000;		// The period allowed for XBee communications to initialize/finalize (ms).
 
@@ -66,7 +66,7 @@ void Message(String msg);
 void setup() {
 	// Initialize the pins
 	pinMode(POWER_PIN, OUTPUT);		// Set the power pin to digital output
-	digitalWrite(POWER_PIN, LOW);	// Turn off the power
+	digitalWrite(POWER_PIN, HIGH);	// Turn on the power
 
 	// Start the I2C interface
 	lightSensor.begin();
@@ -184,7 +184,7 @@ void loop() {
 	// Turn off the power to the components and sleep
 	Message("Turn off power to components");
 	xbeeSerial.end();	// Turn off the serial communication with the xbee
-	digitalWrite(POWER_PIN, LOW);
+//	digitalWrite(POWER_PIN, LOW);
 
 	// Cycle delay
 	Message("Sensor delay");
