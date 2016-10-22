@@ -4,6 +4,7 @@ Created:	12/06/2015 7:49:07 PM
 Author:		Tim Lampman
 */
 
+#include <OneWire.h>
 #include <Wire.h>
 #include <LumSensor.h>
 #include <HTU21D.h>
@@ -45,11 +46,13 @@ const unsigned long COMM_DELAY = 1000;		// The period allowed for XBee communica
 
 // Local pins
 const int POWER_PIN = 12;	// The digital pin for powering the sensors and XBee
+const int DS18S20_PIN = 2;	// The digital pin where the temperature probe is connected
 
 // Sensor objects
 HTU21D airSensor;
 MAX1704 batterySensor;
 AutoLightSensor lightSensor;
+OneWire tempSensor(DS18S20_PIN);
 
 // Union for conversion of numbers to byte arrays
 union FloatConverter {
@@ -59,6 +62,7 @@ union FloatConverter {
 
 void SmartDelay(unsigned long delay_time, bool force_delay);
 void Message(String msg);
+float getTemp();
 
 //=============================================================================
 // SETUP
@@ -113,17 +117,18 @@ void loop() {
 	FloatConverter Luminosity;
 	Luminosity.f = lightSensor.getLuminosity();
 
-	// Read the temperature in the box - could be used for humidity corrections
+	// Read the temperature from the external sensor
 	Message("Reading tempeature");
 	FloatConverter Temperature;
-	Temperature.f = airSensor.readTemperature();
+	Temperature.f = getTemp();
 
 	// Read the humidity
 	Message("Reading humidity");
 	FloatConverter Humidity;
 	float raw_humidity = airSensor.readHumidity();
-	//	Humidity.f = raw_humidity - 0.15*(25.0 - Temperature.f);	// Correction for HTU21D from spec sheet
-	Humidity.f = raw_humidity;
+	float raw_temperature = airSensor.readTemperature();
+	Humidity.f = raw_humidity - 0.15*(25.0 - raw_temperature);	// Correction for HTU21D from spec sheet
+	// Humidity.f = raw_humidity;
 
 	// Read the battery voltage
 	Message("Reading battery voltage");
@@ -209,4 +214,53 @@ void Message(String msg) {
 	Serial.print(millis());
 	Serial.print(": ");
 	Serial.println(msg);
+}
+
+//=============================================================================
+// getTemp
+//=============================================================================
+float getTemp() {	// Returns the temperature from one DS18S20 in DEG Celsius
+	byte data[12];	// Holds temperature data
+	byte addr[8];	// Holds address of the sensor
+
+	if(!tempSensor.search(addr)) {
+		//no more sensors on chain, reset search
+		tempSensor.reset_search();
+		return -1000;
+	}
+
+	if(OneWire::crc8(addr, 7) != addr[7]) {
+		Message("CRC is not valid!");
+		return -1000;
+	}
+
+	if(addr[0] != 0x10 && addr[0] != 0x28) {
+		Message("Device is not recognized");
+		return -1000;
+	}
+
+	tempSensor.reset();
+	tempSensor.select(addr);
+	tempSensor.write(0x44, 1);	// Start conversion, with parasite power on at the end
+
+	delay(750);	// Wait for temperature conversion to complete
+
+	byte present = tempSensor.reset();
+	tempSensor.select(addr);
+	tempSensor.write(0xBE);	// Read Scratchpad
+
+
+	for(int i = 0; i < 9; i++) {	// We need 9 bytes
+		data[i] = tempSensor.read();
+	}
+
+	tempSensor.reset_search();
+
+	byte MSB = data[1];
+	byte LSB = data[0];
+
+	float tempRead = ((MSB << 8) | LSB);	// Using two's compliment
+	float TemperatureSum = tempRead/16;
+
+	return TemperatureSum;
 }
