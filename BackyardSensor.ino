@@ -18,6 +18,8 @@ ISR(WDT_vect) { Sleepy::watchdogEvent(); } // Setup the watchdog
 
 const bool prefer_sleep = true;		// Specifies whether to use delay (false) or sleep (true) for long delays without sensor power
 const bool high_power = true;		// Specifies whether to use delay (true) or sleep (false) for periods when power supplied to sensors
+const bool shutdown = true;		// Specifies whether to shutdown power to the components (true) during the time between measurements or not (false)
+const bool block_serial = true;	// Specifies whether to send debugging info through the serial port (false)
 
 // XBee variables
 AltSoftSerial xbeeSerial;  // The software serial port for communicating with the Xbee (TX Pin 9, RX Pin 8)
@@ -40,6 +42,7 @@ const uint8_t BATTERY_SOC_CODE = 10;
 
 // Timing variables
 const unsigned long SENSOR_DELAY = 60000;	// The sleep period (ms)
+//const unsigned long SENSOR_DELAY = 10000;	// The sleep period (ms) - DEBUGGING
 const unsigned long DELAY_PERIODS = 10;		// The number of sleep periods before updating sensor readings
 const unsigned long STARTUP_DELAY = 3000;	// The period allowed for component warmup and initialization (ms).
 const unsigned long COMM_DELAY = 1000;		// The period allowed for XBee communications to initialize/finalize (ms).
@@ -70,7 +73,6 @@ float getTemp();
 void setup() {
 	// Initialize the pins
 	pinMode(POWER_PIN, OUTPUT);		// Set the power pin to digital output
-	digitalWrite(POWER_PIN, LOW);	// Turn off the power
 
 	// Start the I2C interface
 	lightSensor.begin();
@@ -78,12 +80,25 @@ void setup() {
 	// Setup the serial communications
 	Serial.begin(9600);
 	Message("Starting Serial...");
-	delay(1000);
+	delay(COMM_DELAY);
 
 	// Start the power monitor
 	Message("Setting up battery monitor");
 	batterySensor.reset();		// Do a power reset
 	batterySensor.quickStart();	// Quickly assess the state of charge (SOC)
+
+	// Start the XBee connection, if not in shutdown mode
+	if(!shutdown) {
+		// Connect to the XBee
+		Message("Starting XBee connection...");
+		xbeeSerial.begin(9600);
+		localRadio.setSerial(xbeeSerial);
+		Message("FINISHED");
+	}
+
+	// Shutdown sensor power setup
+	if(shutdown) digitalWrite(POWER_PIN, LOW);	// Turn off the power
+	else digitalWrite(POWER_PIN, HIGH);			// Turn on the power
 }
 
 //=============================================================================
@@ -93,21 +108,23 @@ void loop() {
 	//-------------------------------------------------------------------------
 	// POWER UP COMPONENTS
 	//-------------------------------------------------------------------------
-	// Turn on the power to the attached components
-	Message("Powering up components...");
-	digitalWrite(POWER_PIN, HIGH);
-	SmartDelay(STARTUP_DELAY, high_power);	// Warmup delay
-	Message("Awakening battery sensor");
-	batterySensor.awake();	// Wake the battery sensor
+	if(shutdown) {
+		// Turn on the power to the attached components
+		Message("Powering up components...");
+		digitalWrite(POWER_PIN, HIGH);
+		SmartDelay(STARTUP_DELAY, high_power);	// Warmup delay
+		Message("Awakening battery sensor");
+		batterySensor.awake();	// Wake the battery sensor
 
-	// Connect to the XBee
-	Message("Starting XBee connection...");
-	xbeeSerial.begin(9600);
-	localRadio.setSerial(xbeeSerial);
-	Message("FINISHED");
+		// Connect to the XBee
+		Message("Starting XBee connection...");
+		xbeeSerial.begin(9600);
+		localRadio.setSerial(xbeeSerial);
+		Message("FINISHED");
 
-	// Delay while components power up
-	SmartDelay(COMM_DELAY, high_power);
+		// Delay while components power up
+		SmartDelay(COMM_DELAY, high_power);
+	}
 
 	//-------------------------------------------------------------------------
 	// COLLECT SENSOR DATA
@@ -141,8 +158,10 @@ void loop() {
 	SOC.f = batterySensor.stateOfCharge();
 
 	// Sleep the battery sensor
-	Message("Putting battery sensor to sleep");
-	batterySensor.sleep();
+	if(shutdown) {
+		Message("Putting battery sensor to sleep");
+		batterySensor.sleep();
+	}
 
 	//-------------------------------------------------------------------------
 	// SEND DATA THROUGH XBEE
@@ -166,12 +185,18 @@ void loop() {
 	}
 
 	// Create the message text for debugging output
-	String xbee_message = "Sent the following message(" + String(Temperature.f) + "," + Humidity.f + "," + Power.f + "," + SOC.f + "," + Luminosity.f + "): ";
+/*	String xbee_message = "Sent the following message(";
+	xbee_message += String((double)Temperature.f, 2);
+	xbee_message += "," + String(Humidity.f);
+	xbee_message += "," + String(Power.f);
+	xbee_message += "," + String(SOC.f);
+	xbee_message += "," + String(Luminosity.f);
+	xbee_message += "): ";
 	for(int i = 0; i < sizeof(package); i++) {
 		if(i != 0) xbee_message += "-";
 		xbee_message += String(package[i], HEX);
 	}
-	Message(xbee_message);
+	Message(xbee_message);*/
 
 	// Send the data package to the coordinator through the XBee
 	Message("Sending XBee transmission");
@@ -187,13 +212,19 @@ void loop() {
 	// POWER DOWN COMPONENTS AND WAIT FOR NEXT CYCLE
 	//-------------------------------------------------------------------------
 	// Turn off the power to the components and sleep
-	Message("Turn off power to components");
-	xbeeSerial.end();	// Turn off the serial communication with the xbee
-	digitalWrite(POWER_PIN, LOW);
+	if(shutdown) {
+		Message("Turn off power to components");
+		xbeeSerial.end();	// Turn off the serial communication with the xbee
+		digitalWrite(POWER_PIN, LOW);
+	}
 
 	// Cycle delay
 	Message("Sensor delay");
-	for(int i = 0; i < DELAY_PERIODS; i++) SmartDelay(SENSOR_DELAY, false);
+	for(int i = 0; i < DELAY_PERIODS; i++) {
+		String loop_msg = "Running delay " + String(i+1);
+		Message(loop_msg);
+		SmartDelay(SENSOR_DELAY, false);
+	}
 }
 
 //=============================================================================
@@ -211,9 +242,11 @@ void SmartDelay(unsigned long delay_time, bool force_delay) {
 // Message
 //=============================================================================
 void Message(String msg) {
-	Serial.print(millis());
-	Serial.print(": ");
-	Serial.println(msg);
+	if(!block_serial) {
+		Serial.print(millis());
+		Serial.print(": ");
+		Serial.println(msg);
+	}
 }
 
 //=============================================================================
